@@ -1,0 +1,9 @@
+# Build output
+build*/
+*.o
+*.a
+*.exe
+
+# Local editor settings
+.vscode/
+.idea/

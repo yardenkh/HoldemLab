@@ -1,0 +1,183 @@
+// Script terminal input and verify it uses engine rules without leaking cards.
+#include "decision/HumanDecisionProvider.hpp"
+#include "decision/SimpleAIDecisionProvider.hpp"
+#include "game/PokerGame.hpp"
+#include "ui/TerminalUI.hpp"
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+using namespace poker;
+namespace {
+// Throwing checks remain active in optimized Release builds.
+void check(bool ok, const char *message) {
+  if (!ok)
+    throw std::runtime_error(message);
+}
+PlayerView example_view() {
+  PlayerView view;
+  view.player_id = 0;
+  view.num_players = 2;
+  view.player_stacks[0] = 1000;
+  view.players_in_hand[0] = view.players_in_hand[1] = true;
+  view.legal_actions = {true, true, true, true, true, 100, 200, 1000};
+  return view;
+}
+void commands() {
+  const auto view = example_view();
+  // Each supported command reaches the provider with the requested action.
+  for (const auto &entry : {std::pair{"fold", ActionType::Fold},
+                            std::pair{"check", ActionType::Check},
+                            std::pair{"call", ActionType::Call},
+                            std::pair{"raise 500", ActionType::RaiseTo},
+                            std::pair{"allin", ActionType::AllIn}}) {
+    std::istringstream input(std::string(entry.first) + "\n");
+    std::ostringstream output;
+    TerminalUI ui(input, output);
+    HumanDecisionProvider human(ui);
+    const auto action = human.choose_action(view);
+    check(action.action == entry.second, "command mapped to wrong action");
+    check(action.raise_to == (entry.second == ActionType::RaiseTo ? 500 : 0),
+          "raise command did not preserve total");
+  }
+  // Malformed syntax and out-of-range targets must retry, not reach execution.
+  std::istringstream input(
+      "\nunknown\nraise\nraise 99999999999999999999\n"
+      "raise 500 extra\ncall extra\nraise 199\nraise 1001\nraise 200\n");
+  std::ostringstream output;
+  TerminalUI ui(input, output);
+  check(ui.request_decision(view).raise_to == 200,
+        "invalid input was accepted");
+  auto restricted = view;
+  restricted.legal_actions.can_check = false;
+  restricted.legal_actions.can_raise = false;
+  restricted.legal_actions.can_all_in = false;
+  std::istringstream retry("check\nraise 500\nallin\ncall\n");
+  TerminalUI restricted_ui(retry, output);
+  check(restricted_ui.request_decision(restricted).action == ActionType::Call,
+        "unavailable action accepted");
+  // A closed stream terminates with a clear error instead of looping.
+  std::istringstream closed;
+  TerminalUI closed_ui(closed, output);
+  bool threw = false;
+  try {
+    closed_ui.request_decision(view);
+  } catch (const std::runtime_error &) {
+    threw = true;
+  }
+  check(threw, "closed input did not stop");
+}
+void events_and_play() {
+  // Distinct private cards make accidental disclosure easy to detect.
+  Table table;
+  table_init(table, 2, 500);
+  table.players[0].receive_card({Face::Ace, Suit::Spades});
+  table.players[1].receive_card({Face::King, Suit::Hearts});
+  PotManager pots;
+  std::istringstream input("fold\n");
+  std::ostringstream output;
+  TerminalUI ui(input, output);
+  ui.on_hand_started(1, table, pots);
+  ui.on_stage_started(PokerStage::PreFlop, table, pots);
+  check(output.str().find(card_to_string(table.players[0].hand[0])) ==
+                std::string::npos &&
+            output.str().find(card_to_string(table.players[1].hand[0])) ==
+                std::string::npos,
+        "public callback disclosed private cards");
+  auto view = example_view();
+  view.hole_cards[0] = table.players[0].hand[0];
+  view.hole_card_count = 1;
+  ui.print_player_view(view);
+  check(output.str().find(card_to_string(table.players[0].hand[0])) !=
+                std::string::npos &&
+            output.str().find(card_to_string(table.players[1].hand[0])) ==
+                std::string::npos,
+        "player view revealed wrong cards");
+  table.players[1].in_hand = false;
+  ui.on_showdown(table, pots, {});
+  check(output.str().find(card_to_string(table.players[1].hand[0])) ==
+            std::string::npos,
+        "folded cards disclosed");
+
+  // Exercise real provider/observer wiring through a complete uncontested hand.
+  HumanDecisionProvider human(ui);
+  SimpleAIDecisionProvider ai;
+  PokerGame game(2, {500, 10, 20}, 71);
+  game.set_decision_provider(0, human);
+  game.set_decision_provider(1, ai);
+  game.set_observer(&ui);
+  game.play_one_hand();
+  check(!game.hand_in_progress(), "human hand did not complete");
+  check(game.table().players[0].cash + game.table().players[1].cash == 1000,
+        "interactive hand lost chips");
+  check(output.str().find("Hand finished") != std::string::npos,
+        "payout callback did not display results");
+
+  // Force a real showdown so board and hand-description callbacks also run.
+  std::ostringstream showdown_output;
+  TerminalUI showdown_ui(input, showdown_output);
+  PokerGame showdown(2, {500, 10, 20}, 72);
+  showdown.set_decision_provider(0, ai);
+  showdown.set_decision_provider(1, ai);
+  showdown.set_observer(&showdown_ui);
+  showdown.play_one_hand();
+  check(showdown_output.str().find("Main pot:") != std::string::npos,
+        "showdown callback missing");
+}
+
+void dashboard_play() {
+  // Force interactive behavior on streams: one action, then one result-screen
+  // acknowledgement. The trailing line proves the pause consumes only Enter.
+  std::istringstream input("f\n\nnext\n");
+  std::ostringstream output;
+  TerminalUI ui(input, output, true);
+  HumanDecisionProvider human(ui);
+  SimpleAIDecisionProvider ai;
+  PokerGame game(2, {500, 10, 20}, 71);
+  game.set_decision_provider(0, human);
+  game.set_decision_provider(1, ai);
+  game.set_observer(&ui);
+  game.play_one_hand();
+  const auto screen = output.str();
+  check(screen.find("\033[2J\033[H") != std::string::npos,
+        "interactive display did not refresh");
+  check(screen.find("+-----+") != std::string::npos &&
+            screen.find("[PreFlop]") != std::string::npos &&
+            screen.find("YOUR ACTION >") != std::string::npos,
+        "dashboard is missing cards, stage or action prompt");
+  check(screen.find("YOUR LAST MOVE: PreFlop - fold") != std::string::npos,
+        "human move is not preserved on the result screen");
+  check(screen.find("HAND RESULT") != std::string::npos &&
+            screen.find("Press ENTER") != std::string::npos,
+        "hand results were not paused for review");
+  std::string remaining;
+  std::getline(input, remaining);
+  check(remaining == "next", "result pause consumed too much input");
+  // Dashboard updates must never disclose the opponent's dealt cards before
+  // showdown, including on an uncontested hand's result screen.
+  for (int c = 0; c < game.table().players[1].cards_in_hand; ++c)
+    check(screen.find(card_to_string(game.table().players[1].hand[c])) ==
+              std::string::npos,
+          "dashboard revealed opponent private cards");
+
+  // Invalid input stays next to a freshly redrawn action area.
+  std::istringstream retry("raise 199\nr 200\n");
+  std::ostringstream feedback;
+  TerminalUI retry_ui(retry, feedback, true);
+  check(retry_ui.request_decision(example_view()).raise_to == 200,
+        "raise shortcut or retry failed");
+  check(feedback.str().find(" ! That action is not available") !=
+            std::string::npos,
+        "invalid-action feedback missing from dashboard");
+}
+} // namespace
+int main() {
+  try {
+    commands();
+    events_and_play();
+    dashboard_play();
+    std::cout << "Terminal tests passed\n";
+  } catch (const std::exception &e) {
+    std::cerr << e.what() << '\n';
+    return 1;
+  }
+}

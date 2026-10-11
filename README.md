@@ -44,3 +44,6 @@ ctest --test-dir build --output-on-failure
 
 See [SIMULATION_GUIDE.md](SIMULATION_GUIDE.md) for research APIs and supported
 betting rules.
+
+See [AI_RESEARCH_PLAN.md](AI_RESEARCH_PLAN.md) for the mathematical AI roadmap,
+implementation milestones, and linked research papers and dissertations.

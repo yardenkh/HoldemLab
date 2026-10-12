@@ -1,3 +1,6 @@
+feel free to send suggestions at:
+yardenks@gmail.com
+
 # HoldemLab
 
 A fast C++ Texas Hold'em engine for interactive play, large-scale simulations,

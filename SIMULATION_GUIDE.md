@@ -12,9 +12,11 @@ cmake --build build -j
 ./build/poker_cli
 ```
 
-In a terminal, the display refreshes around the current hand: community cards,
-your private cards, player stacks and positions, current stage, recent actions,
-and your last move. The highlighted YOUR TURN area lists only available actions.
+In a terminal, the display refreshes around the current hand: players sit in a
+circle around the public board and pot, with your seat at the bottom. Each seat
+shows its stack, round contribution, and latest action (or WAIT before acting).
+Your private cards and the current stage remain visible. The highlighted YOUR
+TURN area lists only available actions.
 Type `fold`, `check`, `call`, `raise 500`, or `allin`; shortcuts are `f`, `k`, `c`,
 `r 500`, and `a`. A raise amount is the total contribution for this round.
 Each hand ends with a result screen showing payouts, net gains/losses, and final

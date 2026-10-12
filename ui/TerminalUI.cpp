@@ -53,17 +53,17 @@ void card_boxes(std::ostream &out, const std::array<Card, N> &cards, int count,
 std::string action_label(const PlayerDecision &d) {
   switch (d.action) {
   case ActionType::Fold:
-    return "fold";
+    return "FOLD";
   case ActionType::Check:
-    return "check";
+    return "CHECK";
   case ActionType::Call:
-    return "call";
+    return "CALL";
   case ActionType::RaiseTo:
-    return "raise to " + std::to_string(d.raise_to);
+    return "RAISE " + std::to_string(d.raise_to);
   case ActionType::AllIn:
-    return "all-in";
+    return "ALL-IN";
   }
-  return "unknown";
+  return "UNKNOWN";
 }
 // Accept one complete command, including optional single-letter shortcuts.
 // Malformed numbers and extra words are never partially accepted.
@@ -108,18 +108,6 @@ bool TerminalUI::compact_display() const {
 #endif
   return true;
 }
-void TerminalUI::print_recent_actions() const {
-  const bool compact = compact_display();
-  output_ << (compact ? "RECENT ACTIONS (this hand)\n"
-                      : "\nRECENT ACTIONS (this hand)\n");
-  if (events_.empty())
-    output_ << "  Waiting for the first action.\n";
-  // Bound the visible history so the decision area stays close to the table.
-  const std::size_t limit = compact ? 2 : 6;
-  const auto first = events_.size() > limit ? events_.size() - limit : 0;
-  for (std::size_t i = first; i < events_.size(); ++i)
-    output_ << "  " << events_[i] << '\n';
-}
 void TerminalUI::print_dashboard(const PlayerView &v, bool finished) const {
   const bool compact = compact_display();
   // Clear/home only on interactive terminals. Re-rendering one screen avoids
@@ -149,71 +137,88 @@ void TerminalUI::print_dashboard(const PlayerView &v, bool finished) const {
     if (stage != PokerStage::Showdown)
       output_ << " > ";
   }
-  output_ << (compact ? "\n COMMUNITY CARDS\n"
-                      : "\n\n                        COMMUNITY CARDS\n");
-  card_boxes(output_, v.community_cards, v.community_card_count, compact);
-  output_ << " POT: " << v.pot_amount
-          << " chips   |   ROUND BET: " << v.current_bet
-          << "\n---------------------------------------------------------------"
-             "-----\n";
-  // Two columns keep even an eight-player table compact. Opponent hole cards
-  // are never read here; the restricted PlayerView does not contain them.
-  if (compact)
-    output_ << " SEATS: stack / paid this round | D=dealer, SB/BB=blinds\n";
-  for (int row = 0; row < v.num_players; row += 2) {
-    for (int id = row; id < std::min(row + 2, v.num_players); ++id) {
-      std::ostringstream seat;
-      if (compact) {
-        seat << (id == v.player_id ? "> YOU P" : "  P") << id;
-        if (id == v.dealer_id)
-          seat << " D";
-        if (id == v.small_blind_id)
-          seat << " SB";
-        if (id == v.big_blind_id)
-          seat << " BB";
-        seat << " | " << v.player_stacks[id] << " / "
-             << v.round_contributions[id]
-             << (!v.players_in_hand[id] ? " OUT"
-                 : v.players_all_in[id] ? " ALL-IN"
-                                        : " IN");
-        output_ << std::left << std::setw(35) << seat.str();
-        continue;
-      }
-      seat << (id == v.player_id ? "> YOU (P" : "  Player ") << id;
-      if (id == v.player_id)
-        seat << ')';
-      if (id == v.dealer_id)
-        seat << " D";
-      if (id == v.small_blind_id)
-        seat << " SB";
-      if (id == v.big_blind_id)
-        seat << " BB";
-      seat << " | " << v.player_stacks[id] << " chips";
-      output_ << std::left << std::setw(35) << seat.str();
-    }
-    output_ << '\n';
-    if (compact)
-      continue;
-    for (int id = row; id < std::min(row + 2, v.num_players); ++id) {
-      std::ostringstream detail;
-      const char *status = !v.players_in_hand[id] ? "OUT"
-                           : v.players_all_in[id] ? "ALL-IN"
-                                                  : "IN HAND";
-      detail << "  " << status << " | paid " << v.round_contributions[id];
-      if (!last_actions_[id].empty())
-        detail << " | " << last_actions_[id];
-      output_ << std::left << std::setw(35) << detail.str();
-    }
-    output_ << '\n';
-  }
-  output_ << "-----------------------------------------------------------------"
-             "---\n"
-          << " YOUR CARDS (player " << v.player_id << ")\n";
+  output_ << '\n';
+  print_table(v);
+  output_ << " YOUR CARDS (player " << v.player_id << ")\n";
   card_boxes(output_, v.hole_cards, v.hole_card_count, compact);
-  output_ << " YOUR LAST MOVE: "
-          << (your_last_move_.empty() ? "None yet this hand" : your_last_move_)
-          << '\n';
-  print_recent_actions();
+}
+void TerminalUI::print_table(const PlayerView &v) const {
+  // Eight positions around the board, clockwise from the human at the bottom.
+  // Fewer players use evenly spaced positions; player IDs retain table order.
+  constexpr std::array<int, 8> rows{10, 8, 5, 2, 0, 2, 5, 8};
+  constexpr std::array<int, 8> sides{0, -1, -1, -1, 0, 1, 1, 1};
+  std::array<std::string, MAX_PLAYERS> names{}, details{};
+  std::size_t seat_width = 22;
+  for (int id = 0; id < v.num_players; ++id) {
+    std::ostringstream name, detail;
+    name << (id == v.player_id ? "> YOU P" : "P") << id;
+    if (id == v.dealer_id)
+      name << " D";
+    if (id == v.small_blind_id)
+      name << " SB";
+    if (id == v.big_blind_id)
+      name << " BB";
+    // An observed action takes priority over generic hand status. A blind can
+    // cause all-in before a decision; an eliminated seat never acts this hand.
+    std::string action = last_actions_[id];
+    if (action.empty()) {
+      if (v.players_all_in[id])
+        action = "ALL-IN";
+      else if (!v.players_in_hand[id])
+        action = v.player_stacks[id] == 0 ? "ELIMINATED" : "FOLD";
+      else
+        action = "WAIT";
+    }
+    detail << v.player_stacks[id] << " / " << v.round_contributions[id] << " "
+           << action;
+    names[id] = name.str();
+    details[id] = detail.str();
+    // Grow rather than truncate unusually large stacks or raise targets.
+    seat_width = std::max({seat_width, names[id].size(), details[id].size()});
+  }
+  std::ostringstream cards, pot;
+  for (int i = 0; i < MAX_COMMUNITY_CARDS; ++i) {
+    const auto label = i < v.community_card_count
+                           ? card_to_string(v.community_cards[i])
+                           : "..";
+    cards << "[" << std::right << std::setw(3) << label << "] ";
+  }
+  pot << "POT " << v.pot_amount << " | BET " << v.current_bet;
+  const std::size_t centre_width =
+      std::max<std::size_t>(34, pot.str().size() + 4);
+  // Leave a space on each side of the felt so its border does not touch seats.
+  const std::size_t width = 2 * seat_width + centre_width + 2;
+  std::array<std::string, 12> canvas;
+  canvas.fill(std::string(width, ' '));
+  // Compose fixed coordinates before printing so seat text never collides
+  // with another player or the central board, regardless of seat count.
+  const auto put = [&](int row, std::size_t column, const std::string &text) {
+    canvas[row].replace(column, text.size(), text);
+  };
+  const auto centre = [&](int row, const std::string &text) {
+    put(row, (width - text.size()) / 2, text);
+  };
+  centre(4, "/" + std::string(centre_width - 2, '-') + "\\");
+  centre(5, "|" + std::string(centre_width - 2, ' ') + "|");
+  centre(5, cards.str());
+  centre(6, "|" + std::string(centre_width - 2, ' ') + "|");
+  centre(6, pot.str());
+  centre(7, "\\" + std::string(centre_width - 2, '-') + "/");
+  for (int relative = 0; relative < v.num_players; ++relative) {
+    const int id = (v.player_id + relative) % v.num_players;
+    // Integer rounding assigns distinct circular positions for 2..8 seats.
+    const int slot = (relative * 8 + v.num_players / 2) / v.num_players;
+    const std::size_t column = sides[slot] < 0   ? 0
+                               : sides[slot] > 0 ? width - seat_width
+                                                 : (width - seat_width) / 2;
+    put(rows[slot], column, names[id]);
+    put(rows[slot] + 1, column, details[id]);
+  }
+  for (const auto &line : canvas) {
+    const auto end = line.find_last_not_of(' ');
+    output_ << (end == std::string::npos ? "" : line.substr(0, end + 1))
+            << '\n';
+  }
 }
 void TerminalUI::print_choices(const PlayerView &v) const {
   const auto &a = v.legal_actions;
@@ -275,9 +280,7 @@ void TerminalUI::on_hand_started(int number, const Table &t,
                                  const PotManager &) {
   hand_number_ = number;
   stage_ = PokerStage::PreFlop;
-  events_.clear();
   last_actions_.fill({});
-  your_last_move_.clear();
   showdown_text_.clear();
   for (int id = 0; id < t.num_players; ++id)
     starting_stacks_[id] = t.players[id].cash;
@@ -288,12 +291,11 @@ void TerminalUI::on_stage_started(PokerStage stage, const Table &t,
                                   const PotManager &pots) {
   stage_ = stage;
   const auto event = "--- " + poker_stage_to_string(stage) + " ---";
-  events_.push_back(event);
   if (!interactive_)
     output_ << event << " | Pot: " << pots.total_pot_amount() << '\n';
-  // The next decision redraws the dashboard with the new public board. AI-only
-  // runouts do not flash past the player; all stage transitions stay in
-  // history.
+  // The next decision redraws the circular table with the new public board.
+  // Retain earlier actions so folded seats continue to show FOLD on later
+  // streets.
   (void)t;
 }
 void TerminalUI::on_player_action(int id, const PlayerDecision &d,
@@ -304,9 +306,6 @@ void TerminalUI::on_player_action(int id, const PlayerDecision &d,
   const auto event =
       poker_stage_to_string(stage_) + " | " +
       (id == human_id_ ? "YOU" : "Player " + std::to_string(id)) + ": " + label;
-  events_.push_back(event);
-  if (id == human_id_)
-    your_last_move_ = poker_stage_to_string(stage_) + " - " + label;
   if (!interactive_)
     output_ << event << '\n';
 }

@@ -144,8 +144,12 @@ void dashboard_play() {
             screen.find("[PreFlop]") != std::string::npos &&
             screen.find("YOUR ACTION >") != std::string::npos,
         "dashboard is missing cards, stage or action prompt");
-  check(screen.find("YOUR LAST MOVE: PreFlop - fold") != std::string::npos,
-        "human move is not preserved on the result screen");
+  check(screen.find("FOLD") != std::string::npos,
+        "human fold is not shown at the seat on the result screen");
+  check(screen.find("YOUR LAST MOVE") == std::string::npos &&
+            screen.find("RECENT ACTIONS") == std::string::npos &&
+            screen.find("SEATS:") == std::string::npos,
+        "removed history or legend still appears");
   check(screen.find("HAND RESULT") != std::string::npos &&
             screen.find("Press ENTER") != std::string::npos,
         "hand results were not paused for review");
@@ -169,12 +173,54 @@ void dashboard_play() {
             std::string::npos,
         "invalid-action feedback missing from dashboard");
 }
+
+void circular_seats() {
+  // Exercise all supported table sizes and rotate the human to another seat.
+  // Each seat appears once, and the human stays below the shared board.
+  for (int count = 2; count <= MAX_PLAYERS; ++count) {
+    auto view = example_view();
+    view.num_players = count;
+    view.player_id = count - 1;
+    for (int id = 0; id < count; ++id) {
+      view.player_stacks[id] = 1800;
+      view.players_in_hand[id] = true;
+    }
+    std::istringstream input;
+    std::ostringstream output;
+    TerminalUI ui(input, output, true);
+    Table table;
+    table_init(table, count, 1800);
+    PotManager pots;
+    ui.on_hand_started(1, table, pots);
+    ui.on_player_action(0, {ActionType::Fold, 0}, table, pots, {});
+    view.players_in_hand[0] = false;
+    // A fold from a previous street remains visible rather than becoming OUT.
+    ui.on_stage_started(PokerStage::Turn, table, pots);
+    ui.print_player_view(view);
+    const auto screen = output.str();
+    for (int id = 0; id < count; ++id) {
+      const auto name = "P" + std::to_string(id);
+      const auto position = screen.find(name);
+      check(position != std::string::npos &&
+                screen.find(name, position + name.size()) == std::string::npos,
+            "circular table omitted or duplicated a seat");
+    }
+    check(screen.find("> YOU P") > screen.find("[ ..]"),
+          "human is not seated below the board");
+    check(screen.find("1800 / 0 FOLD") != std::string::npos,
+          "fold action did not persist across streets");
+    check(screen.find(" IN") == std::string::npos &&
+              screen.find(" OUT") == std::string::npos,
+          "generic IN/OUT status is still rendered");
+  }
+}
 } // namespace
 int main() {
   try {
     commands();
     events_and_play();
     dashboard_play();
+    circular_seats();
     std::cout << "Terminal tests passed\n";
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

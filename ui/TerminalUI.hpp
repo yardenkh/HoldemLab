@@ -4,7 +4,6 @@
 #include "view/PlayerView.hpp"
 #include <iosfwd>
 #include <string>
-#include <vector>
 namespace poker {
 class TerminalUI final : public GameObserver {
 public:
@@ -34,13 +33,11 @@ private:
   PokerStage stage_ = PokerStage::PreFlop;
   // Only display data is cached here. The engine remains the source of truth
   // for stacks, turns, cards and legal actions.
-  std::vector<std::string> events_;
   std::array<std::string, MAX_PLAYERS> last_actions_{};
   std::array<int, MAX_PLAYERS> starting_stacks_{};
-  std::string your_last_move_;
   std::string showdown_text_;
   void print_dashboard(const PlayerView &view, bool finished) const;
-  void print_recent_actions() const;
+  void print_table(const PlayerView &view) const;
   void print_choices(const PlayerView &view) const;
   bool compact_display() const;
 };

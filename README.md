@@ -1,7 +1,7 @@
 feel free to send suggestions at:
 yardenks@gmail.com
 
-# HoldemLab
+# poker simulator++
 
 A fast C++ Texas Hold'em engine for interactive play, large-scale simulations,
 and poker AI research.

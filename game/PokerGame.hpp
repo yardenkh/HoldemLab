@@ -33,6 +33,10 @@ public:
             std::uint32_t seed = 5489u,
             const FastHandEvaluator &evaluator = default_fast_hand_evaluator());
   void set_random_seed(std::uint32_t seed);
+  // Update blind amounts between hands; an active hand keeps its original
+  // rules. Throws logic_error during play or invalid_argument for unsafe blind
+  // values.
+  void set_blinds(int small_blind, int big_blind);
   // Borrowed providers/observer must outlive their use. nullptr disables
   // events.
   void set_decision_provider(int player_id, DecisionProvider &provider);

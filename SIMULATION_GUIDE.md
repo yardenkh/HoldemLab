@@ -20,8 +20,14 @@ TURN area lists only available actions.
 Type `fold`, `check`, `call`, `raise 500`, or `allin`; shortcuts are `f`, `k`, `c`,
 `r 500`, and `a`. A raise amount is the total contribution for this round.
 Each hand ends with a result screen showing payouts, net gains/losses, and final
-stacks. Press Enter to continue. Redirected input/output remains plain and does
-not require the extra Enter. Headless simulation tools do not use this UI.
+stacks. The default CLI now runs a tournament and also shows blind levels,
+eliminations, finishes and prizes. Press Enter after unfinished hands; the final
+hand shows final standings without another pause. Redirected input/output remains
+plain and requires no extra Enter. Use `./build/poker_cli --game` for the original
+fixed-blind match. Headless simulation tools do not use this UI.
+
+CLI prizes use abstract units: a pool of 1,000 units per player pays 70/30%
+heads-up or 60/30/10% to the top three with more players. No entry fee is deducted.
 
 ## Build and verify
 
@@ -67,6 +73,142 @@ on first use. CMake embeds the source-tree table location. For deployment, load
 `PokerGame` constructor argument or the final runner/batch argument. It must
 outlive those users. Never allocate/load its roughly 15 MiB tables per environment.
 Packed public scores and observer score meanings are unchanged.
+
+## Single-table tournaments
+
+`Tournament` wraps `PokerGame` for a 2–8 player freezeout with no re-entry.
+Stacks carry between hands. After each payout, new eliminations receive finishing
+positions and prizes. Simultaneous eliminations rank by stacks **before blinds**;
+equal stacks share a position interval and the combined prizes. For indivisible
+integer prize units, any remainder goes to tied players in ascending seat-ID order.
+
+```cpp
+#include "tournament/Tournament.hpp"
+#include "decision/SimpleAIDecisionProvider.hpp"
+
+// Define money separately from playing chips. Here the integer prize units
+// represent cents, so the three paid positions award $500, $300 and $200.
+poker::TournamentConfig config;
+config.starting_chips = 2500;
+config.prizes = {50000, 30000, 20000};
+// Each level lasts ten completed hands; the final level continues to the winner.
+config.blind_levels = {{50, 100, 10}, {100, 200, 10}, {200, 400, 10}};
+
+// Providers are borrowed. This simple policy is stateless and can serve all seats.
+poker::SimpleAIDecisionProvider policy;
+poker::Tournament tournament(8, config, 42);
+for (int id = 0; id < 8; ++id)
+  tournament.set_decision_provider(id, policy);
+tournament.run(); // Continue until one player holds all the chips.
+const auto &standings = tournament.result();
+// players[id].first_place/last_place describe the player's finish or tied interval;
+// players[id].prize is money, not the final stack of poker chips.
+```
+
+`run(100)` plays at most 100 additional hands and can be called again to resume;
+`play_one_hand()` advances by one complete hand. `blind_level_index()` identifies
+the most recently begun hand's level (zero before play). Progression is based on
+completed hands rather than elapsed time, preserving seeded reproducibility.
+
+Configuration must provide a nonempty, nonnegative, descending prize list with
+no more entries than players; unpaid lower places implicitly receive zero. The
+nonempty blind schedule must have positive durations and nondecreasing blind
+amounts, with a positive small blind smaller than the big blind. Chips and the
+total prize pool are validated against their integer storage limits.
+
+Attach an optional `GameObserver` through `set_observer`. It receives ordinary
+engine events; standings update after `play_one_hand()` returns. Providers and
+observers must outlive use; observers should not throw. Provider errors propagate,
+and replacing/fixing a provider lets the pending hand resume without applying
+blinds twice. The wrapper exposes only a const table, preventing callers from
+resetting its underlying game and invalidating tournament standings.
+
+Attach a `TournamentObserver` using `set_tournament_observer` before play starts.
+Its hand-finish event sees settled standings, unlike the earlier engine event.
+`TerminalUI` implements both observer interfaces; attach it through both setters
+for hand events and tournament results. It pauses once, after both are displayed.
+`reset(seed)` reuses the wrapper/providers, clearing ranks, prizes, levels and
+counters. Reset external policy state separately. Hand-level short-blind/reopening
+semantics remain those documented below. ICM is not implemented yet.
+
+## Tournament ICM analysis
+
+`Analysis::calculate_icm` converts settled survivor stacks and remaining prizes
+into expected prize values under the Independent Chip Model. It is static: no
+hand-evaluator lookup table or Analysis object needs to be loaded for this method.
+
+```cpp
+#include "analysis/Analysis.hpp"
+
+// Keep a separate seat-ID mapping if you compact these from a tournament table.
+const std::array<int, 3> stacks{5000, 3000, 2000};
+// Prize values are integer units (for example cents), independent of poker chips.
+const std::array<std::int64_t, 3> prizes{500, 300, 200};
+const auto values = poker::Analysis::calculate_icm(stacks, prizes);
+// values[0], values[1], values[2] correspond to these three input stacks:
+// approximately 383.928571, 327.5, 288.571429 prize units.
+```
+
+Provide 1..8 positive survivor stacks and a descending, nonnegative prize list.
+Omitted finishing positions pay zero; an empty list returns zero values. Entries
+beyond the supplied player count in the fixed output array are zero. Already paid
+elimination prizes must be handled separately; zero mid-hand cash does not prove
+elimination, so first settle actual/hypothetical pots before building these inputs.
+
+The exact model calculation uses at most 256 subset states, without random samples
+or heap allocations. Floating-point rounding remains, especially for large integer
+prize values. ICM does not account for skill, position, future blind pressure, or
+entry fees. It supplies a stack-value tool, not an action selector. Future AI
+rollouts should compute ICM for each settled outcome before averaging its value.
+
+## Parallel tournament simulations
+
+```sh
+cmake --build build --target poker_tournament_simulation -j
+./build/poker_tournament_simulation 10000 4
+```
+
+Arguments specify complete tournaments and worker count (zero selects hardware
+concurrency). This executable uses six simple AI seats, the default blind schedule,
+and prizes `{3000, 1800, 1200}` in abstract units. It reports actual hands,
+decisions, throughput, wins, prize totals per seat, and a reproducible checksum.
+
+For custom experiments:
+
+```cpp
+#include "simulation/TournamentSimulation.hpp"
+#include "decision/SimpleAIDecisionProvider.hpp"
+
+poker::TournamentSimulationOptions options;
+options.episodes = 1000;
+options.players = 6;
+options.workers = 4;
+options.seed = 42;
+options.config.prizes = {3000, 1800, 1200};
+// Keep per-tournament finishes, prizes, elimination hands, and final stacks.
+std::vector<poker::TournamentEpisodeResult> rows(options.episodes);
+const auto totals = poker::run_tournament_simulations(
+    options,
+    [](int seat) {
+      // The seat argument allows mixed algorithm lineups. This example uses
+      // one stateless policy type, with a private provider object per seat.
+      (void)seat;
+      return std::make_unique<poker::SimpleAIDecisionProvider>();
+    },
+    rows);
+```
+
+Factory calls are serial; providers receive seat-specific `reset_for_episode`
+seeds. Construct equivalent initial policies for each seat regardless of worker
+count, and clear episode-local state on reset. Share only immutable model data;
+RNGs/beliefs belong to each provider. One episode always runs until a winner.
+
+`first_episode` preserves scenario IDs across chunks; output rows are local to
+each chunk. Seeded results are scheduling-independent on the same runtime.
+Prize totals are gross rewards, not net profit after entry fees. Worker errors
+are rethrown after threads join; discard partially filled output on failure.
+The original `run_simulations` and hand benchmark remain available for chip-based
+experiments.
 
 ## Externally supplied actions
 
@@ -169,6 +311,53 @@ observation/action/reward transitions in contiguous buffers and flush them in
 chunks, keeping model training and storage out of the game loop.
 
 ## History and rollout sampling
+
+### Simple showdown equity
+
+`Analysis` estimates the requesting player's share of one hypothetical pot,
+assuming every opponent still in the hand reaches showdown with uniformly random
+cards. Folded players are excluded; all-in players remain opponents. The live
+game is never changed, and each sample uses reusable arrays rather than a table
+copy. A second overload accepts explicit opponent ranges; side pots and future
+betting are not included yet.
+
+```cpp
+#include "analysis/Analysis.hpp"
+
+// Construct once and reuse; Analysis borrows the shared fast lookup evaluator.
+poker::Analysis analysis;
+// Obtain the view while the game is waiting for a decision.
+const auto view = game.current_view();
+// Average 10,000 sampled pot shares with an explicit reproducible seed.
+const double equity = analysis.calculate_equity(view, 10000, 42);
+```
+
+The result is between 0 and 1: 0.5 means an estimated 50% pot share, including
+ties, rather than necessarily a 50% outright win rate. The method rejects invalid
+observations and nonpositive sample counts. Its default seed is 5489; explicitly
+vary the seed when independent repeated estimates are desired.
+
+To restrict a particular opponent, supply equally likely physical two-card
+combinations. Opponents omitted from the list remain uniformly random:
+
+```cpp
+// Assume seat 1 holds either Ah Ac or Kh Kc, each equally likely before blockers.
+const std::array<poker::OpponentRange, 1> ranges{{
+    {1, {{poker::Card{poker::Face::Ace, poker::Suit::Hearts},
+          poker::Card{poker::Face::Ace, poker::Suit::Clubs}},
+         {poker::Card{poker::Face::King, poker::Suit::Hearts},
+          poker::Card{poker::Face::King, poker::Suit::Clubs}}}}
+}};
+// These are hypothetical assumptions; no actual opponent cards are read.
+const double ranged_equity = analysis.calculate_equity(view, 10000, 42, ranges);
+```
+
+Known-card conflicts are removed, and duplicate/reversed combinations count
+once. Rejection sampling conditions all supplied ranges on collision-free joint
+assignments. A range must identify a unique opponent still in the hand. Empty or
+impossible ranges throw `std::invalid_argument`; excessive search/sampling throws
+`std::runtime_error`, never a partial estimate. The documented limits are
+1,000,000 compatibility-search hand visits and 10,000 proposals per sample.
 
 Call `enable_history(true)` between hands to record stage, actor, action, chips
 paid, and resulting bet. `action_history()` is a read-only span valid until the

@@ -1,11 +1,12 @@
 // Terminal presentation is separate from poker rules and headless simulations.
 #pragma once
 #include "game/GameObserver.hpp"
+#include "tournament/TournamentObserver.hpp"
 #include "view/PlayerView.hpp"
 #include <iosfwd>
 #include <string>
 namespace poker {
-class TerminalUI final : public GameObserver {
+class TerminalUI final : public GameObserver, public TournamentObserver {
 public:
   // Real terminals get a refreshed dashboard. Redirected output stays plain.
   TerminalUI();
@@ -23,6 +24,13 @@ public:
                    const std::array<HandScore, MAX_PLAYERS> &) override;
   void on_hand_finished(const Table &,
                         const std::array<int, MAX_PLAYERS> &) override;
+  // Tournament events arrive after rank/prize bookkeeping. Ordinary game users
+  // still get the existing hand-only display and pause behavior.
+  void on_tournament_started(int players, const TournamentConfig &) override;
+  void on_blind_level_started(std::size_t level, const BlindLevel &,
+                              std::uint64_t completed_hands) override;
+  void on_tournament_hand_finished(const Table &,
+                                   const TournamentResult &) override;
 
 private:
   std::istream &input_;
@@ -36,6 +44,12 @@ private:
   std::array<std::string, MAX_PLAYERS> last_actions_{};
   std::array<int, MAX_PLAYERS> starting_stacks_{};
   std::string showdown_text_;
+  bool tournament_mode_ = false;
+  std::size_t tournament_level_ = 0;
+  BlindLevel tournament_blinds_;
+  int tournament_remaining_ = 0;
+  std::string tournament_prizes_;
+  std::array<bool, MAX_PLAYERS> finish_announced_{};
   void print_dashboard(const PlayerView &view, bool finished) const;
   void print_table(const PlayerView &view) const;
   void print_choices(const PlayerView &view) const;

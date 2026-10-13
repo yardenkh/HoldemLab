@@ -2,6 +2,7 @@
 #include "decision/HumanDecisionProvider.hpp"
 #include "decision/SimpleAIDecisionProvider.hpp"
 #include "game/PokerGame.hpp"
+#include "tournament/Tournament.hpp"
 #include "ui/TerminalUI.hpp"
 #include <iostream>
 #include <sstream>
@@ -214,6 +215,43 @@ void circular_seats() {
           "generic IN/OUT status is still rendered");
   }
 }
+void tournament_display() {
+  // A complete tournament uses the same hand renderer but adds a single
+  // post-ranking pause. No human input is needed with these passive providers.
+  std::istringstream input(std::string(32, '\n'));
+  std::ostringstream output;
+  TerminalUI ui(input, output, true);
+  SimpleAIDecisionProvider ai;
+  TournamentConfig config;
+  config.starting_chips = 100;
+  config.blind_levels = {{5, 10, 1}, {1000, 2000, 1}};
+  config.prizes = {700, 300};
+  Tournament tournament(2, config, 71);
+  tournament.set_decision_provider(0, ai);
+  tournament.set_decision_provider(1, ai);
+  tournament.set_observer(&ui);
+  tournament.set_tournament_observer(&ui);
+  tournament.play_one_hand();
+  const auto first_screen = output.str();
+  check(first_screen.find("TOURNAMENT STARTED") != std::string::npos &&
+            first_screen.find("Level 1 | Blinds 5/10") != std::string::npos &&
+            first_screen.find("Prizes (units): 1: 700 | 2: 300") !=
+                std::string::npos,
+        "Tournament configuration is missing from the UI");
+  const auto pause = first_screen.find("Press ENTER");
+  check(pause != std::string::npos &&
+            first_screen.find("Press ENTER", pause + 1) == std::string::npos,
+        "Tournament UI paused twice for one hand");
+  tournament.run(20);
+  check(tournament.finished(), "UI test tournament did not finish");
+  const auto final_screen = output.str();
+  check(final_screen.find("ELIMINATED") != std::string::npos &&
+            final_screen.find("FINAL TOURNAMENT RESULTS") !=
+                std::string::npos &&
+            final_screen.find("Prize 700 units") != std::string::npos &&
+            final_screen.find("Prize 300 units") != std::string::npos,
+        "Tournament finish or prize displays are missing");
+}
 } // namespace
 int main() {
   try {
@@ -221,6 +259,7 @@ int main() {
     events_and_play();
     dashboard_play();
     circular_seats();
+    tournament_display();
     std::cout << "Terminal tests passed\n";
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';

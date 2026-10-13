@@ -124,6 +124,11 @@ void TerminalUI::print_dashboard(const PlayerView &v, bool finished) const {
              "=====\n";
   if (interactive_)
     output_ << "\033[0m";
+  if (tournament_mode_)
+    output_ << " TOURNAMENT | Level " << tournament_level_ + 1 << " | Blinds "
+            << tournament_blinds_.small_blind << '/'
+            << tournament_blinds_.big_blind
+            << " | Remaining: " << tournament_remaining_ << '\n';
   // A stage path makes it clear where this decision fits within the hand.
   output_ << " ";
   for (const auto stage :
@@ -329,6 +334,10 @@ void TerminalUI::on_showdown(const Table &t, const PotManager &pots,
 }
 void TerminalUI::on_hand_finished(const Table &t,
                                   const std::array<int, MAX_PLAYERS> &payouts) {
+  // Pots are already settled here, so this count excludes actual eliminations
+  // rather than temporarily empty stacks belonging to live all-in players.
+  if (tournament_mode_)
+    tournament_remaining_ = count_players_with_chips(t);
   if (interactive_) {
     // Construct display-only public state after payouts. No betting legality
     // is needed on this screen, and only the human's own cards are copied.
@@ -362,8 +371,75 @@ void TerminalUI::on_hand_finished(const Table &t,
             << " received " << payouts[id] << " | " << (net >= 0 ? "+" : "")
             << net << " | " << t.players[id].cash << " chips\n";
   }
-  if (interactive_) {
+  if (interactive_ && !tournament_mode_) {
     output_ << "\n Press ENTER to continue > " << std::flush;
+    std::string line;
+    if (!std::getline(input_, line))
+      throw std::runtime_error("Terminal input closed; game stopped.");
+  }
+}
+void TerminalUI::on_tournament_started(int players,
+                                       const TournamentConfig &config) {
+  tournament_mode_ = true;
+  tournament_remaining_ = players;
+  finish_announced_.fill(false);
+  std::ostringstream prizes;
+  for (std::size_t place = 0; place < config.prizes.size(); ++place)
+    prizes << (place ? " | " : "") << place + 1 << ": " << config.prizes[place];
+  tournament_prizes_ = prizes.str();
+  output_ << "\nTOURNAMENT STARTED | " << players << " players | "
+          << config.starting_chips
+          << " chips each\nPrizes (units): " << tournament_prizes_ << "\n";
+}
+void TerminalUI::on_blind_level_started(std::size_t level,
+                                        const BlindLevel &blinds,
+                                        std::uint64_t completed_hands) {
+  tournament_level_ = level;
+  tournament_blinds_ = blinds;
+  if (!interactive_)
+    output_ << "BLIND LEVEL " << level + 1 << " | " << blinds.small_blind << '/'
+            << blinds.big_blind << " | After " << completed_hands << " hands\n";
+}
+void TerminalUI::on_tournament_hand_finished(const Table &,
+                                             const TournamentResult &result) {
+  tournament_remaining_ = result.players_remaining;
+  output_ << "\nTOURNAMENT STANDINGS | Remaining: " << result.players_remaining
+          << " | Prizes (units): " << tournament_prizes_ << '\n';
+  for (int id = 0; id < result.num_players; ++id) {
+    const auto &finish = result.players[id];
+    if (!finish.first_place || finish_announced_[id])
+      continue;
+    finish_announced_[id] = true;
+    output_ << (id == human_id_ ? " YOU (P" : " Player ") << id;
+    if (id == human_id_)
+      output_ << ')';
+    output_ << (id == result.winner_id ? " WINS" : " ELIMINATED")
+            << " | Finish: " << finish.first_place;
+    if (finish.last_place != finish.first_place)
+      output_ << ".." << finish.last_place << " (tie)";
+    output_ << " | Prize: " << finish.prize << " units\n";
+  }
+  if (result.winner_id >= 0) {
+    output_ << "\n====================== FINAL TOURNAMENT RESULTS "
+               "====================\n";
+    // List finish intervals in order; ties retain their full position interval.
+    for (int place = 1; place <= result.num_players; ++place)
+      for (int id = 0; id < result.num_players; ++id) {
+        const auto &finish = result.players[id];
+        if (finish.first_place != place)
+          continue;
+        output_ << " Player " << id << " | Finish " << finish.first_place;
+        if (finish.last_place != finish.first_place)
+          output_ << ".." << finish.last_place;
+        output_ << " | Prize " << finish.prize << " units\n";
+      }
+    output_ << " Tournament winner: player " << result.winner_id << '\n';
+  }
+  // GameObserver already printed cards and chip payouts. Pause only now, once
+  // tournament ranks/prizes are also visible. No extra pause after the final
+  // hand.
+  if (interactive_ && result.winner_id < 0) {
+    output_ << "\n Press ENTER for the next tournament hand > " << std::flush;
     std::string line;
     if (!std::getline(input_, line))
       throw std::runtime_error("Terminal input closed; game stopped.");

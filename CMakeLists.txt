@@ -44,6 +44,11 @@ add_library(poker_engine
     view/PlayerView.cpp
     game/PokerGame.cpp
     simulation/Simulation.cpp
+    # Caller-driven equity analysis; games never invoke it automatically.
+    analysis/Analysis.cpp
+    # Tournament orchestration wraps complete engine hands.
+    tournament/Tournament.cpp
+    simulation/TournamentSimulation.cpp
 )
 
 # Load the lookup table once by default. Applications can inject a different
@@ -270,6 +275,24 @@ add_custom_target(regenerate_hand_tables
 # CTest
 # ------------------------------------------------------------
 enable_testing()
+
+add_executable(poker_tournament_tests tests/TournamentTests.cpp)
+target_link_libraries(poker_tournament_tests PRIVATE poker_engine)
+add_test(NAME poker_tournament_tests COMMAND poker_tournament_tests)
+
+# Parallel tournament episodes have their own runner and determinism checks.
+add_executable(poker_tournament_simulation_tests tests/TournamentSimulationTests.cpp)
+target_link_libraries(poker_tournament_simulation_tests PRIVATE poker_engine)
+add_test(NAME poker_tournament_simulation_tests COMMAND poker_tournament_simulation_tests)
+
+# Build explicitly for large experiments: each episode is a complete tournament.
+add_executable(poker_tournament_simulation EXCLUDE_FROM_ALL tools/TournamentSimulation.cpp)
+target_link_libraries(poker_tournament_simulation PRIVATE poker_engine)
+
+# Seeded equity calculations, invalid observations, and exact reference cases.
+add_executable(poker_analysis_tests tests/AnalysisTests.cpp)
+target_link_libraries(poker_analysis_tests PRIVATE poker_engine)
+add_test(NAME poker_analysis_tests COMMAND poker_analysis_tests)
 
 # Stream-based checks exercise human input without an interactive session.
 add_executable(poker_terminal_tests tests/TerminalTests.cpp)

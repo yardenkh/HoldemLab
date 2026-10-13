@@ -10,6 +10,7 @@ and poker AI research.
 - Visual terminal play against simple AI opponents.
 - Fast hand evaluation using precomputed lookup tables.
 - Reproducible simulations, parallel workers, snapshots, and batched decisions.
+- Single-table tournament API with rising blinds, tied finishes, and prize payouts.
 
 ## Build
 
@@ -26,17 +27,21 @@ cmake --build build -j
 ./build/poker_cli
 ```
 
+The default mode is a freezeout tournament with increasing blinds and finishing-place
+prizes. Use `./build/poker_cli --game` for ordinary fixed-blind play.
 Choose a player count. You play seat 0. Commands: `fold`, `check`, `call`,
 `raise 500`, and `allin`. Raise amounts are totals for the current betting round.
 
 ## Simulate
 
 ```bash
-cmake --build build --target poker_simulation_benchmark -j
-./build/poker_simulation_benchmark 10000 4
+cmake --build build --target poker_tournament_simulation -j
+./build/poker_tournament_simulation 10000 4
 ```
 
-The arguments specify simulation episodes and worker threads.
+The arguments specify complete tournaments and worker threads. The runner reports
+hands, decisions, wins, and total prizes per seat. Prizes are abstract integer units.
+For ordinary hand/match experiments, build and run `poker_simulation_benchmark`.
 The included AI is a simple baseline; it does not assess hand strength.
 
 ## Test

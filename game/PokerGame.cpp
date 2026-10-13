@@ -27,6 +27,18 @@ PokerGame::PokerGame(int num_players, const GameConfig &config,
 void PokerGame::set_random_seed(std::uint32_t seed) {
   random_generator_.seed(seed);
 }
+void PokerGame::set_blinds(int small_blind, int big_blind) {
+  if (hand_active_)
+    throw std::logic_error("Change blinds only between hands");
+  // Match the engine constructor's blind rules and integer-arithmetic bounds.
+  // Validate both values before updating either, so rejected changes are
+  // atomic.
+  if (small_blind <= 0 || big_blind < small_blind ||
+      big_blind > std::numeric_limits<int>::max() / 2)
+    throw std::invalid_argument("Invalid blind amounts");
+  config_.small_blind = small_blind;
+  config_.big_blind = big_blind;
+}
 void PokerGame::set_decision_provider(int id, DecisionProvider &provider) {
   if (id < 0 || id >= table_.num_players)
     throw std::out_of_range("Invalid provider seat");
